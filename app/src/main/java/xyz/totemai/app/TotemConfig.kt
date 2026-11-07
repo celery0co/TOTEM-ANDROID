@@ -6,7 +6,7 @@ object TotemConfig {
     const val KEY_TOKEN = "anythingllm_authToken"
     const val KEY_USER = "anythingllm_user"
 
-    const val APP_VERSION = "2.3"
+    const val APP_VERSION = "2.4"
     const val DEEP_LINK_SCHEME = "totemai"
 
     const val SITE_URL = "https://totemai.xyz"
