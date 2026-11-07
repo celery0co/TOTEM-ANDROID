@@ -1,9 +1,9 @@
-# TOTEM MOBILE — Android
+# TOTEM Android
 
-A native Android application built with Kotlin and Jetpack Compose. Home, native sign-in, chat, chat history, credits/wallet and profile are rendered by the app itself. The app calls the official hosted TOTEM API at **https://beta.totemai.xyz** for authentication, workspaces, chat streaming, account credits and wallet balance. **No website pages are embedded in the app.**
+A native Android application built with Kotlin and Jetpack Compose. The app provides native Home, sign-in, chat, chat history, credits/wallet and Profile screens and connects to the official hosted TOTEM service at **https://beta.totemai.xyz** over HTTPS.
 
-- Application ID: \`xyz.totemai.app\`
-- Version: \`2.1\` (\`versionCode 3\`)
+- Application ID: `xyz.totemai.app`
+- Version: `2.4` (`versionCode 6`)
 - Minimum Android: 7.0 / API 24
 - Target / compile SDK: 34
 - Java: 17
@@ -11,50 +11,53 @@ A native Android application built with Kotlin and Jetpack Compose. Home, native
 - Android Gradle Plugin: 8.3.2
 - Kotlin: 1.9.24
 
+## Features
+
+- Native Jetpack Compose interface with dark and light themes
+- Native username/password sign-in and public registration when enabled by the server
+- Chat streaming and server-backed conversation history
+- Workspace thread creation and selection
+- Credits and read-only $TOTEM wallet balance display
+- Server-provided inference option selector when the hosted deployment exposes it
+- Agent tool approval prompts with explicit Approve and Reject actions
+- Android Keystore-backed encrypted local session storage where supported
+
 ## Build an APK with GitHub Actions
 
-1. Open the repository's **Actions** tab and select **Build TOTEM AI Android APK**.
-2. Open the latest successful run on branch \`feature/native-chat-wallet-ui\`.
-3. Download the \`TOTEM-APK\` artifact and extract \`app-debug.apk\`.
-4. Install the APK on Android.
+1. Open the repository's **Actions** tab.
+2. Select **Build TOTEM AI Android APK**.
+3. Open a successful run from `main` or a `feature/**` branch.
+4. Download the `TOTEM-APK` artifact and extract `app-debug.apk`.
+5. Install the APK on Android.
 
-The workflow installs JDK 17, Android SDK Platform 34 / Build Tools 34.0.0 and Gradle 8.7, then runs \`:app:assembleDebug\`. The APK is a debug build and is not Play Store signed.
+The workflow installs JDK 17, Android SDK Platform 34 / Build Tools 34.0.0 and Gradle 8.7, then runs `:app:assembleDebug`. The APK is a debug build and is not Play Store signed.
 
-**Important for debug builds:** GitHub-hosted runners generate a temporary debug signing key for each run. Android may reject an update if the installed APK was signed by a different run. When that happens, uninstall the old debug app first, then install the newly downloaded APK. The app's saved local session will be removed when uninstalling.
+**Debug signing note:** unless a persistent keystore is configured in CI, GitHub-hosted runners use a temporary debug signing key. Android may reject an update signed by a different run. Uninstalling the previous debug build can resolve a signature conflict, but it also removes the app's local session and preferences.
 
 ## Local build
 
 Install JDK 17 and Android SDK Platform 34 / Build Tools 34.0.0, then run:
 
-\`\`\`bash
+```bash
 ./gradlew :app:assembleDebug
-\`\`\`
+```
 
 On Windows:
 
-\`\`\`bat
+```bat
 gradlew.bat :app:assembleDebug
-\`\`\`
+```
 
-The included \`gradle-wrapper.jar\` is a small project-local bootstrap launcher, not the upstream Gradle Wrapper JAR. Its Java source is included at \`gradle/wrapper/GradleWrapperMain.java\`. It downloads the Gradle 8.7 binary distribution over HTTPS, verifies its SHA-256 against \`gradle-wrapper.properties\`, and launches it. See \`gradle/wrapper/WRAPPER-NOTICE.md\`. GitHub Actions installs Gradle directly and does not depend on this bootstrap launcher.
+The included `gradle-wrapper.jar` is a small project-local bootstrap launcher, not the upstream Gradle Wrapper JAR. Its Java source is included at `gradle/wrapper/GradleWrapperMain.java`. It downloads Gradle 8.7 over HTTPS, verifies its SHA-256 against `gradle-wrapper.properties`, and launches it. GitHub Actions installs Gradle directly and does not depend on this bootstrap launcher.
 
-## Native screens and hosted API
+## Hosted API and security scope
 
-- Home: native Compose screen
-- Sign-in: native Compose form calling the official TOTEM session API
-- Chat: native Compose screen using mobile workspace APIs and server-sent streaming responses
-- Chat history: native drawer for selecting previous conversations
-- Wallet: native Compose screen for credits and an already-connected wallet balance
-- Profile: native Compose screen
-- Hosted origin: \`https://beta.totemai.xyz\`
+The Android client sends ordinary HTTPS requests to the hosted TOTEM API. Authentication, model execution, inference routing, credits and wallet-balance reads are performed by the hosted service.
 
-The Android app does not contain a local AI backend, model runtime, credit ledger, payment processor or private-key manager. Wallet signing remains in the external wallet app. The current hosted API does not expose a safe endpoint for linking a new wallet to an existing account. Do not enter a seed phrase or private key into this app.
+Inference choices are supplied by the server when the deployment exposes the relevant endpoints. The Android client displays the returned choices and sends the selected option to the server; it does **not** implement client-side end-to-end encryption, network anonymity or independent inference routing. The labels and privacy guarantees of a server-provided option must be documented by the hosted service itself.
 
-## Security notes
+Agent tool requests are not approved automatically. The app displays the requested tool, its description and available payload details, then sends the user's explicit approval or rejection to the agent WebSocket. Requests expire according to the server-provided timeout and are denied by the server when no response arrives.
 
-- HTTPS only; cleartext traffic is disabled.
-- Account sessions and mobile-device tokens are stored using Android Keystore-backed encrypted preferences when available.
-- If encrypted storage is unavailable, the session falls back to memory-only storage and will not survive an app restart.
-- App backup is disabled; TLS errors are never bypassed.
+The app does not contain a local AI backend, model runtime, credit ledger, payment processor or private-key manager. Wallet signing remains outside the app; do not enter a seed phrase or private key.
 
-See \`docs/SECURITY.md\`, \`docs/PORT_PARITY.md\`, \`docs/TESTING.md\` and \`docs/BUILD_GUIDE.md\` before distributing the app.
+See `docs/PORT_PARITY.md`, `docs/TESTING.md`, `docs/BUILD_GUIDE.md` and `docs/SECURITY.md` for implementation details and verification limits.
