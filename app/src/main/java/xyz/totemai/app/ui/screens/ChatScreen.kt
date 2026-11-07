@@ -212,13 +212,20 @@ fun ChatScreen(
         val approval = pendingToolApproval ?: return@LaunchedEffect
         delay(approval.timeoutMs)
         if (pendingToolApproval?.requestId == approval.requestId) {
+            // Deny locally just before the server timeout so the WebSocket
+            // receives an explicit negative response instead of waiting for expiry.
+            val denied = api.respondToAgentToolApproval(approval.requestId, approved = false)
             pendingToolApproval = null
             approvalDetailsExpanded = false
-            Toast.makeText(
-                context,
-                "Agent approval timed out and was denied",
-                Toast.LENGTH_SHORT
-            ).show()
+            if (denied) {
+                Toast.makeText(context, "Agent action denied", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(
+                    context,
+                    "Agent approval expired and was denied",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
         }
     }
 
@@ -363,6 +370,8 @@ fun ChatScreen(
                             sending = false
                         }
                         TotemChatStreamEvent.Finished -> {
+                            pendingToolApproval = null
+                            approvalDetailsExpanded = false
                             sending = false
                         }
                     }
