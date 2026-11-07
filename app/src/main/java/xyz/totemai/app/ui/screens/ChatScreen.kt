@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.WindowInsets
@@ -33,6 +35,9 @@ import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.DrawerValue
@@ -58,6 +63,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -65,9 +71,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import xyz.totemai.app.R
 import xyz.totemai.app.SessionStore
+import xyz.totemai.app.TotemAgentToolApproval
 import xyz.totemai.app.TotemApi
 import xyz.totemai.app.TotemChatMessage
 import xyz.totemai.app.TotemChatStreamEvent
@@ -83,6 +91,7 @@ import xyz.totemai.app.ui.theme.Surface1
 import xyz.totemai.app.ui.theme.TextPrimary
 import xyz.totemai.app.ui.theme.TextSecondary
 import xyz.totemai.app.ui.theme.Violet
+import android.widget.Toast
 import java.util.UUID
 
 @Composable
@@ -94,6 +103,7 @@ fun ChatScreen(
     onCreditsChanged: () -> Unit
 ) {
     val api = remember(store) { TotemApi(store) }
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val listState = rememberLazyListState()
@@ -110,6 +120,8 @@ fun ChatScreen(
     var inferenceOptions by remember { mutableStateOf<List<TotemInferenceOption>>(emptyList()) }
     var selectedInferenceOption by rememberSaveable { mutableStateOf<String?>(null) }
     var changingInferenceOption by remember { mutableStateOf(false) }
+    var pendingToolApproval by remember { mutableStateOf<TotemAgentToolApproval?>(null) }
+    var approvalDetailsExpanded by remember { mutableStateOf(false) }
 
     suspend fun loadChatWorkspace() {
         val available = api.workspaces()
@@ -196,6 +208,27 @@ fun ChatScreen(
         }
     }
 
+    LaunchedEffect(pendingToolApproval?.requestId) {
+        val approval = pendingToolApproval ?: return@LaunchedEffect
+        delay(approval.timeoutMs)
+        if (pendingToolApproval?.requestId == approval.requestId) {
+            // Deny locally just before the server timeout so the WebSocket
+            // receives an explicit negative response instead of waiting for expiry.
+            val denied = api.respondToAgentToolApproval(approval.requestId, approved = false)
+            pendingToolApproval = null
+            approvalDetailsExpanded = false
+            if (denied) {
+                Toast.makeText(context, "Agent action denied", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(
+                    context,
+                    "Agent approval expired and was denied",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
     fun createNewChat() {
         val currentWorkspace = workspace ?: return
         scope.launch {
@@ -254,6 +287,18 @@ fun ChatScreen(
         }
     }
 
+    fun respondToToolApproval(approval: TotemAgentToolApproval, approved: Boolean) {
+        val sent = api.respondToAgentToolApproval(approval.requestId, approved)
+        pendingToolApproval = null
+        approvalDetailsExpanded = false
+        val notice = when {
+            !sent -> "Could not send the agent approval response"
+            approved -> "Agent action approved"
+            else -> "Agent action denied"
+        }
+        Toast.makeText(context, notice, Toast.LENGTH_SHORT).show()
+    }
+
     fun selectInferenceOption(option: TotemInferenceOption) {
         val currentWorkspace = workspace ?: return
         if (sending || changingInferenceOption) return
@@ -310,7 +355,12 @@ fun ChatScreen(
                                 if (item.id == assistantId) item.copy(text = responseText) else item
                             }
                         }
+                        is TotemChatStreamEvent.ToolApprovalRequested -> {
+                            pendingToolApproval = event.approval
+                            approvalDetailsExpanded = false
+                        }
                         is TotemChatStreamEvent.Failed -> {
+                            pendingToolApproval = null
                             error = event.message
                             messages = messages.map { item ->
                                 if (item.id == assistantId && item.text.isBlank()) {
@@ -320,6 +370,8 @@ fun ChatScreen(
                             sending = false
                         }
                         TotemChatStreamEvent.Finished -> {
+                            pendingToolApproval = null
+                            approvalDetailsExpanded = false
                             sending = false
                         }
                     }
@@ -629,6 +681,80 @@ fun ChatScreen(
                                     CircularProgressIndicator(color = Violet, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                                 }
                             }
+                        }
+                    }
+                }
+
+                pendingToolApproval?.let { approval ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = InkElevated)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Agent action requires approval",
+                                color = Violet,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                text = approval.skillName,
+                                color = TextPrimary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            approval.description?.let { description ->
+                                Text(
+                                    text = description,
+                                    color = TextSecondary,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            if (approval.payloadJson.isNotBlank()) {
+                                TextButton(
+                                    onClick = { approvalDetailsExpanded = !approvalDetailsExpanded }
+                                ) {
+                                    Text(
+                                        if (approvalDetailsExpanded) "Hide request details"
+                                        else "View request details",
+                                        color = Violet
+                                    )
+                                }
+                                if (approvalDetailsExpanded) {
+                                    Text(
+                                        text = approval.payloadJson,
+                                        color = TextSecondary,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 150.dp)
+                                            .verticalScroll(rememberScrollState())
+                                    )
+                                }
+                            }
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Button(onClick = { respondToToolApproval(approval, true) }) {
+                                    Text("Approve")
+                                }
+                                TextButton(onClick = { respondToToolApproval(approval, false) }) {
+                                    Text("Reject", color = TextSecondary)
+                                }
+                            }
+                            Text(
+                                text = "Only approve actions you understand. This request expires automatically.",
+                                color = TextSecondary,
+                                style = MaterialTheme.typography.labelSmall
+                            )
                         }
                     }
                 }

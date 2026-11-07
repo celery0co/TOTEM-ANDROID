@@ -72,7 +72,16 @@ data class TotemLoginResult(
     val message: String?
 )
 
+data class TotemAgentToolApproval(
+    val requestId: String,
+    val skillName: String,
+    val description: String?,
+    val payloadJson: String,
+    val timeoutMs: Long
+)
+
 sealed interface TotemChatStreamEvent {
+    data class ToolApprovalRequested(val approval: TotemAgentToolApproval) : TotemChatStreamEvent
     data class Text(val value: String, val replace: Boolean = false) : TotemChatStreamEvent
     data class Failed(val message: String) : TotemChatStreamEvent
     data object Finished : TotemChatStreamEvent
@@ -93,6 +102,7 @@ private class AgentSession(
     @Volatile var socket: WebSocket? = null
     @Volatile var awaitingFeedback: Boolean = false
     @Volatile var streamingSeen: Boolean = false
+    @Volatile var pendingToolApprovalRequestId: String? = null
 }
 
 /**
@@ -572,6 +582,26 @@ class TotemApi(private val store: SessionStore) {
         }
     }
 
+    /** Sends the user's explicit decision for the currently pending tool request. */
+    fun respondToAgentToolApproval(requestId: String, approved: Boolean): Boolean {
+        return synchronized(agentLock) {
+            val agent = activeAgentSession
+            if (agent == null || agent.pendingToolApprovalRequestId != requestId) {
+                false
+            } else {
+                val sent = agent.socket?.send(
+                    JSONObject()
+                        .put("type", "toolApprovalResponse")
+                        .put("requestId", requestId)
+                        .put("approved", approved)
+                        .toString()
+                ) == true
+                if (sent) agent.pendingToolApprovalRequestId = null
+                sent
+            }
+        }
+    }
+
     private fun handleAgentSocketMessage(agent: AgentSession, raw: String) {
         if (synchronized(agentLock) { activeAgentSession !== agent }) return
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return
@@ -605,10 +635,34 @@ class TotemApi(private val store: SessionStore) {
             }
             "toolApprovalRequest" -> {
                 val requestId = json.optString("requestId")
+                if (requestId.isBlank()) return
+
                 val skillName = json.optString("skillName").ifBlank { "requested tool" }
-                // Never approve an agent action implicitly. Reject the request
-                // and allow the agent to continue with the rest of its answer.
-                if (requestId.isNotBlank()) {
+                val payloadJson = when (val payload = json.opt("payload")) {
+                    is JSONObject -> runCatching { payload.toString(2) }.getOrDefault(payload.toString())
+                    is JSONArray -> runCatching { payload.toString(2) }.getOrDefault(payload.toString())
+                    null, JSONObject.NULL -> ""
+                    else -> payload.toString()
+                }
+                val approval = TotemAgentToolApproval(
+                    requestId = requestId,
+                    skillName = skillName,
+                    description = json.optString("description")
+                        .takeIf { it.isNotBlank() && it != "null" },
+                    payloadJson = payloadJson,
+                    timeoutMs = json.optLong("timeoutMs", 120_000L).coerceIn(1_000L, 600_000L)
+                )
+
+                // The official agent protocol waits for an explicit response.
+                // Keep the request pending until the user approves or rejects it.
+                agent.pendingToolApprovalRequestId = requestId
+                val delivered = agent.sink?.trySend(
+                    TotemChatStreamEvent.ToolApprovalRequested(approval)
+                )?.isSuccess == true
+
+                // Fail closed if the chat UI cannot receive the approval prompt.
+                if (!delivered) {
+                    agent.pendingToolApprovalRequestId = null
                     agent.socket?.send(
                         JSONObject()
                             .put("type", "toolApprovalResponse")
@@ -617,7 +671,7 @@ class TotemApi(private val store: SessionStore) {
                             .toString()
                     )
                     agent.sink?.trySend(
-                        TotemChatStreamEvent.Text("[Mobile app did not approve: " + skillName + ".]\n")
+                        TotemChatStreamEvent.Text("[Agent action denied: approval prompt unavailable.]\n")
                     )
                 }
             }
@@ -670,7 +724,10 @@ class TotemApi(private val store: SessionStore) {
             agent.sink = null
             agent.turnCompletion = null
             agent.awaitingFeedback = keepSession
-            if (!keepSession) activeAgentSession = null
+            if (!keepSession) {
+                agent.pendingToolApprovalRequestId = null
+                activeAgentSession = null
+            }
         }
 
         event?.let { sink?.trySend(it) }
@@ -684,6 +741,7 @@ class TotemApi(private val store: SessionStore) {
         synchronized(agentLock) {
             if (activeAgentSession === agent) activeAgentSession = null
             agent.awaitingFeedback = false
+            agent.pendingToolApprovalRequestId = null
         }
         agent.socket?.close(1000, reason.take(120))
         val sink = agent.sink
